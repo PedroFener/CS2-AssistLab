@@ -6,9 +6,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StatsLogger } from "./statsLogger.js";
 import { extractPlayers } from "./gsi.js";
+import { createSimulation } from "./simulator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAX_BODY = 2 * 1024 * 1024;
+
+// Módulos do painel que o navegador também usa (servidos em /lib/*.js).
+const BROWSER_LIBS = new Set(["esp.js", "gsi.js"]);
 
 export function validateOptions({ host, port, token }) {
   const errors = [];
@@ -28,10 +32,12 @@ export function validateOptions({ host, port, token }) {
  * @param {string} o.token token que o cfg do CS2 envia em auth.token
  * @param {string|null} o.logDir pasta para CSV/JSONL (null = sem logs)
  * @param {boolean} o.rawLog grava cada payload em JSONL
+ * @param {boolean} o.demo  inicia com dados simulados (modo demonstração)
  */
-export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir = null, rawLog = false, publicDir } = {}) {
+export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir = null, rawLog = false, publicDir, demo = false } = {}) {
   if (!token) throw new Error("token é obrigatório");
-  const indexPath = path.join(publicDir ?? path.join(__dirname, "..", "public"), "index.html");
+  const pub = publicDir ?? path.join(__dirname, "..", "public");
+  const pages = { "/": "index.html", "/esp": "esp.html" };
 
   const sse = new Set();
   const arrivals = [];
@@ -41,7 +47,9 @@ export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir
   let rawStream = null;
   let pingTimer = null;
   let startedAt = 0;
-  const stats = { received: 0, rejected: 0, lastAt: 0, lastError: "" };
+  let demoTimer = null;
+  let demoSim = null;
+  const stats = { received: 0, rejected: 0, lastAt: 0, lastError: "", demoFrames: 0 };
 
   function broadcast(obj) {
     const data = `data: ${JSON.stringify(obj)}\n\n`;
@@ -81,38 +89,70 @@ export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir
       return;
     }
     delete payload.auth; // não reenviar o token ao navegador
-    const now = Date.now();
+    if (demoTimer) {
+      // Dados reais chegaram: sai do modo demonstração para não misturar.
+      setDemo(false);
+    }
     stats.received++;
+    accept(payload, false);
+    res.writeHead(200).end("ok");
+  }
+
+  /** Publica um estado para os navegadores. Dados de demonstração não vão para os logs. */
+  function accept(payload, isDemo) {
+    const now = Date.now();
     stats.lastAt = now;
     arrivals.push(now);
     while (arrivals.length && now - arrivals[0] > 2000) arrivals.shift();
     latest = payload;
-    broadcast({ type: "state", at: now, payload });
+    broadcast({ type: "state", at: now, demo: isDemo, payload });
+    if (isDemo) { stats.demoFrames++; return; }
     try {
       logger?.ingest(payload);
       rawStream?.write(JSON.stringify({ at: now, payload }) + "\n");
     } catch (e) {
       stats.lastError = `log: ${e.message}`;
     }
-    res.writeHead(200).end("ok");
+  }
+
+  /** Liga/desliga o modo demonstração (partida simulada a 10 Hz). */
+  function setDemo(on) {
+    if (on && !demoTimer) {
+      demoSim = createSimulation({ players: 10, humans: 3 });
+      demoTimer = setInterval(() => { demoSim.step(0.1); accept(demoSim.payload(), true); }, 100);
+      demoTimer.unref?.();
+    } else if (!on && demoTimer) {
+      clearInterval(demoTimer);
+      demoTimer = null;
+      demoSim = null;
+      latest = null;              // não deixa um quadro simulado "congelado" na tela
+      broadcast({ type: "clear", at: Date.now() });
+    }
+    return !!demoTimer;
   }
 
   function handler(req, res) {
     const url = new URL(req.url, "http://localhost");
     try {
       if (req.method === "POST" && (url.pathname === "/gsi" || url.pathname === "/")) return void handleGsi(req, res);
-      if (req.method === "GET" && url.pathname === "/") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fs.readFileSync(indexPath));
+      if (req.method === "GET" && pages[url.pathname]) {
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(fs.readFileSync(path.join(pub, pages[url.pathname])));
+        return;
+      }
+      if (req.method === "GET" && url.pathname.startsWith("/lib/") && BROWSER_LIBS.has(url.pathname.slice(5))) {
+        res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" })
+          .end(fs.readFileSync(path.join(__dirname, url.pathname.slice(5))));
         return;
       }
       if (req.method === "GET" && url.pathname === "/events") {
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         res.write(": conectado\n\n");
-        if (latest) res.write(`data: ${JSON.stringify({ type: "state", at: stats.lastAt, payload: latest })}\n\n`);
+        if (latest) res.write(`data: ${JSON.stringify({ type: "state", at: stats.lastAt, demo: !!demoTimer, payload: latest })}\n\n`);
         sse.add(res);
         req.on("close", () => sse.delete(res));
         return;
       }
+      if (req.method === "GET" && url.pathname === "/favicon.ico") { res.writeHead(204).end(); return; }
       if (req.method === "GET" && url.pathname === "/stats") {
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(getStats()));
         return;
@@ -140,6 +180,8 @@ export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir
       phase: latest?.round?.phase ?? latest?.map?.phase ?? null,
       players: players.length,
       bots: players.filter((p) => p.bot).length,
+      demo: !!demoTimer,
+      demoFrames: stats.demoFrames,
       lastError: stats.lastError,
       logs: logger ? { events: logger.eventsPath, rounds: logger.roundsPath, dir: logger.dir } : null,
     };
@@ -168,6 +210,7 @@ export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir
         startedAt = Date.now();
         pingTimer = setInterval(() => broadcast({ type: "ping", at: Date.now() }), 5000);
         pingTimer.unref?.();
+        if (demo) setDemo(true);
         resolve(getStats());
       });
     });
@@ -176,6 +219,7 @@ export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir
   function stop() {
     return new Promise((resolve) => {
       clearInterval(pingTimer);
+      setDemo(false);
       for (const res of sse) { try { res.end(); } catch { /* já fechado */ } }
       sse.clear();
       let summary = null;
@@ -192,5 +236,5 @@ export function createDashboard({ host = "127.0.0.1", port = 3010, token, logDir
     });
   }
 
-  return { start, stop, getStats };
+  return { start, stop, getStats, setDemo };
 }

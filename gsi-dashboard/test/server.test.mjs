@@ -126,3 +126,50 @@ test("porta em uso gera erro claro", async () => {
   await assert.rejects(b.start(), /já está em uso/);
   await a.stop();
 });
+
+test("rotas da Visão ESP e dos módulos do navegador", async () => {
+  const dash = createDashboard({ port: 0, token: TOKEN });
+  const { port } = await dash.start();
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const esp = await fetch(base + "/esp");
+    assert.equal(esp.status, 200);
+    assert.match(await esp.text(), /Visão ESP/);
+    const lib = await fetch(base + "/lib/esp.js");
+    assert.equal(lib.status, 200);
+    assert.match(lib.headers.get("content-type"), /javascript/);
+    assert.match(await lib.text(), /export function buildEspFrame/);
+    assert.equal((await fetch(base + "/lib/gsi.js")).status, 200);
+    // só arquivos da lista branca
+    assert.equal((await fetch(base + "/lib/server.js")).status, 404);
+    assert.equal((await fetch(base + "/lib/..%2Fpackage.json")).status, 404);
+  } finally { await dash.stop(); }
+});
+
+test("modo demonstração: gera dados, não grava CSV e sai ao chegar dado real", async () => {
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "assistlab-demo-"));
+  const dash = createDashboard({ port: 0, token: TOKEN, logDir, demo: true });
+  const { port } = await dash.start();
+  try {
+    await new Promise((r) => setTimeout(r, 650));
+    let s = dash.getStats();
+    assert.equal(s.demo, true);
+    assert.ok(s.demoFrames >= 4, `quadros: ${s.demoFrames}`);
+    assert.equal(s.players, 10);
+    assert.equal(s.received, 0, "demo não conta como recebido do CS2");
+    const ev = fs.readFileSync(s.logs.events, "utf8").trim().split("\n");
+    assert.equal(ev.length, 1, "demo não pode ir para o CSV");
+
+    // dado real desliga a demonstração
+    const r = await fetch(`http://127.0.0.1:${port}/gsi`, { method: "POST",
+      body: JSON.stringify(payload(1, "live", [{ id: "76561198000000001", name: "Real", team: "CT", hp: 100 }])) });
+    assert.equal(r.status, 200);
+    s = dash.getStats();
+    assert.equal(s.demo, false);
+    assert.equal(s.players, 1);
+
+    assert.equal(dash.setDemo(true), true);
+    assert.equal(dash.setDemo(false), false);
+    assert.equal(dash.getStats().players, 0, "ao desligar, limpa o quadro simulado");
+  } finally { await dash.stop(); }
+});

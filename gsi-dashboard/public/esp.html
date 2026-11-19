@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AssistLab · Visão ESP</title>
+<style>
+  :root { --bg:#0b0e13; --panel:#141922; --line:#252c38; --txt:#d9dfe7; --mut:#7b8594; --ally:#4da3ff; --adv:#ff5a5a; --acc:#8fd3ff; --ok:#5fd38d; --warn:#ffb347; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font:13px/1.4 "Segoe UI", system-ui, sans-serif; overflow:hidden; }
+  .app { display:grid; grid-template-rows:auto 1fr; grid-template-columns:1fr 290px; height:100vh; }
+  header { grid-column:1 / -1; display:flex; align-items:center; gap:14px; padding:8px 14px; border-bottom:1px solid var(--line); background:var(--panel); flex-wrap:wrap; }
+  .brand { font-weight:600; letter-spacing:.02em; }
+  .brand span { color:var(--acc); }
+  header label { display:flex; align-items:center; gap:6px; color:var(--mut); }
+  select, input[type=range] { accent-color:var(--acc); }
+  select { background:var(--bg); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:4px 6px; font:inherit; max-width:220px; }
+  .badge { padding:2px 9px; border-radius:999px; font-size:11px; font-weight:600; }
+  .badge.live { background:#16351f; color:var(--ok); } .badge.demo { background:#3a2a10; color:var(--warn); } .badge.off { background:#3a1b1b; color:#ff7b7b; }
+  header a { color:var(--acc); text-decoration:none; margin-left:auto; }
+  #stage { position:relative; min-width:0; min-height:0; }
+  canvas { display:block; width:100%; height:100%; }
+  #hint { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; color:var(--mut); padding:40px; pointer-events:none; }
+  aside { border-left:1px solid var(--line); background:var(--panel); overflow:auto; padding:12px 14px; }
+  h2 { margin:14px 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:.09em; color:var(--mut); font-weight:600; }
+  h2:first-child { margin-top:0; }
+  .toggle { display:flex; justify-content:space-between; align-items:center; padding:5px 0; cursor:pointer; user-select:none; }
+  .toggle input { appearance:none; width:34px; height:18px; border-radius:999px; background:#2a3240; position:relative; cursor:pointer; transition:background .15s; margin:0; }
+  .toggle input::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:#9aa4b2; transition:transform .15s, background .15s; }
+  .toggle input:checked { background:#1f5d8f; }
+  .toggle input:checked::after { transform:translateX(16px); background:#fff; }
+  .legend div { display:flex; align-items:center; gap:8px; padding:2px 0; }
+  .sw { width:12px; height:12px; border-radius:3px; border:2px solid; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td { padding:3px 2px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  tr { cursor:pointer; } tr:hover td { background:#1b2230; }
+  .ally { color:var(--ally); } .adv { color:var(--adv); } .mut { color:var(--mut); }
+  .kbd { font-family:Consolas, monospace; background:#1e2430; border:1px solid var(--line); border-radius:4px; padding:0 4px; }
+  @media (max-width:900px) { .app { grid-template-columns:1fr; grid-template-rows:auto 60vh auto; } aside { border-left:none; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">AssistLab <span>ESP</span> · visão do espectador</div>
+    <span id="status" class="badge off">sem dados</span>
+    <label>POV <select id="pov"></select></label>
+    <label>FOV <input id="fov" type="range" min="50" max="110" value="74"><span id="fovv">74°</span></label>
+    <label>Alcance <input id="range" type="range" min="10" max="100" value="100"><span id="rangev">∞</span></label>
+    <a href="/" id="radarLink">← Radar</a>
+  </header>
+
+  <div id="stage">
+    <canvas id="c"></canvas>
+    <div id="hint">Aguardando dados…<br><br>Entre como espectador ou GOTV no CS2, ou ligue o modo demonstração no app.</div>
+  </div>
+
+  <aside>
+    <h2>Recursos</h2>
+    <div id="toggles"></div>
+    <h2>Legenda</h2>
+    <div class="legend">
+      <div><span class="sw" style="border-color:var(--ally)"></span> aliado do POV</div>
+      <div><span class="sw" style="border-color:var(--adv)"></span> adversário do POV</div>
+      <div><span class="sw" style="border-color:#aaa;border-style:dashed"></span> bot (contorno tracejado)</div>
+    </div>
+    <h2>Jogadores <span class="mut">(clique para observar)</span></h2>
+    <table id="list"></table>
+    <h2>Atalhos</h2>
+    <div class="mut"><span class="kbd">Q</span>/<span class="kbd">E</span> troca o POV · <span class="kbd">B</span> caixas · <span class="kbd">N</span> nomes · <span class="kbd">M</span> minimapa</div>
+    <h2>Desempenho</h2>
+    <div id="perf" class="mut">—</div>
+  </aside>
+</div>
+
+<script type="module">
+import { extractPlayers } from "/lib/gsi.js";
+import { buildEspFrame, makeCamera, project, DEFAULT_FEATURES, PLAYER_HEIGHT } from "/lib/esp.js";
+
+const $ = (id) => document.getElementById(id);
+const cv = $("c"), ctx = cv.getContext("2d");
+const COLORS = { ally: "#4da3ff", adversary: "#ff5a5a" };
+const LABELS = {
+  boxes: "Caixas (bounding boxes)", names: "Nomes", distance: "Distância", health: "Barra de vida",
+  offscreen: "Indicadores fora da tela", snaplines: "Linhas de posição", grid: "Grade do chão",
+  minimap: "Minimapa", allies: "Mostrar aliados", adversaries: "Mostrar adversários", bots: "Mostrar bots", humans: "Mostrar humanos",
+};
+const KEYS = { b: "boxes", n: "names", m: "minimap" };
+
+// ---------------------------------------------------------- estado
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("assistlab.esp." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("assistlab.esp." + k, JSON.stringify(v)); } catch { /* sem armazenamento */ } },
+};
+const features = { ...DEFAULT_FEATURES, ...store.get("features", {}) };
+let fov = store.get("fov", 74);
+let rangeM = store.get("range", 100);  // 100 = sem limite
+let povId = new URLSearchParams(location.search).get("pov") || store.get("pov", null);
+let prev = null, cur = null;            // dois últimos quadros, para interpolar
+let demo = false, lastAt = 0;
+const stats = { players: 0, boxes: 0, offscreen: 0, hidden: 0, fps: 0, pov: null, frames: 0 };
+window.__espStats = stats;              // lido pelos testes automatizados
+
+// ---------------------------------------------------------- painel
+function buildToggles() {
+  $("toggles").innerHTML = Object.keys(LABELS).map((k) =>
+    `<label class="toggle"><span>${LABELS[k]}</span><input type="checkbox" data-k="${k}" ${features[k] ? "checked" : ""}></label>`).join("");
+  for (const el of $("toggles").querySelectorAll("input")) {
+    el.onchange = () => { features[el.dataset.k] = el.checked; store.set("features", features); };
+  }
+}
+function syncToggles() { for (const el of $("toggles").querySelectorAll("input")) el.checked = !!features[el.dataset.k]; }
+buildToggles();
+
+$("fov").value = fov; $("fovv").textContent = `${fov}°`;
+$("fov").oninput = () => { fov = Number($("fov").value); $("fovv").textContent = `${fov}°`; store.set("fov", fov); };
+$("range").value = rangeM; $("rangev").textContent = rangeM >= 100 ? "∞" : `${rangeM} m`;
+$("range").oninput = () => { rangeM = Number($("range").value); $("rangev").textContent = rangeM >= 100 ? "∞" : `${rangeM} m`; store.set("range", rangeM); };
+$("pov").onchange = () => setPov($("pov").value);
+
+function setPov(id) {
+  povId = id; store.set("pov", id);
+  $("radarLink").href = "/?sel=" + encodeURIComponent(id ?? "");
+  const u = new URL(location.href); u.searchParams.set("pov", id ?? ""); history.replaceState(null, "", u);
+}
+
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (KEYS[k]) { features[KEYS[k]] = !features[KEYS[k]]; store.set("features", features); syncToggles(); }
+  if ((k === "q" || k === "e") && cur) {
+    const alive = cur.players.filter((p) => p.health > 0 && p.pos && p.forward);
+    if (!alive.length) return;
+    const i = alive.findIndex((p) => p.steamId === povId);
+    setPov(alive[(i + (k === "e" ? 1 : -1) + alive.length) % alive.length].steamId);
+  }
+});
+
+// ---------------------------------------------------------- dados
+function onState(payload, at) {
+  const players = extractPlayers(payload);
+  prev = cur; cur = { at, players };
+  lastAt = at;
+  if (!players.length) return;
+  const pov = players.find((p) => p.steamId === povId);
+  if (!pov || pov.health <= 0) {
+    // POV ausente ou morto: passa para um vivo (preferindo o mesmo time).
+    const alive = players.filter((p) => p.health > 0 && p.pos && p.forward);
+    const pick = alive.find((p) => pov && p.team === pov.team) ?? alive.find((p) => !p.bot) ?? alive[0];
+    if (pick) setPov(pick.steamId);
+  }
+  renderSelect(players); renderList(players);
+}
+
+function renderSelect(players) {
+  const opts = players.map((p) => `<option value="${p.steamId}" ${p.steamId === povId ? "selected" : ""}>${esc(p.name)} (${p.team}${p.bot ? ", bot" : ""}${p.health <= 0 ? ", morto" : ""})</option>`).join("");
+  if ($("pov").dataset.sig !== opts) { $("pov").innerHTML = opts; $("pov").dataset.sig = opts; }
+}
+
+function renderList(players) {
+  const pov = players.find((p) => p.steamId === povId);
+  const rows = players.filter((p) => p.pos).map((p) => ({ p, d: pov?.pos ? Math.hypot(p.pos[0] - pov.pos[0], p.pos[1] - pov.pos[1], p.pos[2] - pov.pos[2]) * 0.0254 : 0 }))
+    .sort((a, b) => a.d - b.d);
+  $("list").innerHTML = rows.map(({ p, d }) => {
+    const cls = !pov ? "" : p.steamId === pov.steamId ? "" : p.team === pov.team ? "ally" : "adv";
+    return `<tr data-id="${p.steamId}" class="${p.health <= 0 ? "mut" : ""}"><td class="${cls}">${p.steamId === povId ? "▶ " : ""}${esc(p.name)}</td>
+      <td class="mut">${p.bot ? "bot" : "humano"}</td><td>${p.health} HP</td><td>${p.steamId === povId ? "POV" : d.toFixed(0) + " m"}</td></tr>`;
+  }).join("");
+  for (const tr of $("list").querySelectorAll("tr")) tr.onclick = () => setPov(tr.dataset.id);
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+// Interpola posições entre os dois últimos quadros (o GSI chega a ~10-20 Hz).
+function interpolated() {
+  if (!cur) return [];
+  if (!prev || cur.at <= prev.at) return cur.players;
+  const t = Math.min(1, (performance.timeOrigin + performance.now() - cur.at) / (cur.at - prev.at));
+  const byId = new Map(prev.players.map((p) => [p.steamId, p]));
+  return cur.players.map((p) => {
+    const q = byId.get(p.steamId);
+    if (!q || !q.pos || !p.pos || q.health <= 0) return p;
+    const lerp = (a, b) => a.map((v, i) => v + (b[i] - v) * t);
+    // interpola de prev para cur, "atrasado" um quadro, para não extrapolar
+    return { ...p, pos: lerp(q.pos, p.pos), forward: q.forward && p.forward ? lerp(q.forward, p.forward) : p.forward };
+  });
+}
+
+// ---------------------------------------------------------- desenho
+function drawGrid(cam, pov) {
+  ctx.strokeStyle = "rgba(143,211,255,0.07)"; ctx.lineWidth = 1;
+  const step = 128, span = 2048, z = pov.pos[2];
+  const gx = Math.round(pov.pos[0] / step) * step, gy = Math.round(pov.pos[1] / step) * step;
+  for (let i = -span; i <= span; i += step) {
+    for (const [a, b] of [[[gx + i, gy - span, z], [gx + i, gy + span, z]], [[gx - span, gy + i, z], [gx + span, gy + i, z]]]) {
+      // recorta o segmento em pedaços para não sumir quando uma ponta fica atrás da câmera
+      ctx.beginPath(); let pen = false;
+      for (let s = 0; s <= 16; s++) {
+        const t = s / 16, p = project(cam, [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, z]);
+        if (!p) { pen = false; continue; }
+        if (pen) ctx.lineTo(p.x, p.y); else { ctx.moveTo(p.x, p.y); pen = true; }
+      }
+      ctx.stroke();
+    }
+  }
+}
+
+function drawBox(it, w, h) {
+  const { box, player: p, relation, distM } = it;
+  const col = COLORS[relation];
+  const alpha = Math.max(0.45, Math.min(1, 1.4 - distM / 60));
+  ctx.globalAlpha = alpha;
+  if (features.snaplines) {
+    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(w / 2, h); ctx.lineTo(box.x + box.w / 2, box.y + box.h); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (features.boxes) {
+    ctx.strokeStyle = col; ctx.lineWidth = 2;
+    if (p.bot) ctx.setLineDash([6, 4]);
+    ctx.strokeRect(box.x, box.y, box.w, box.h);
+    ctx.setLineDash([]);
+    ctx.fillStyle = col + "14"; ctx.fillRect(box.x, box.y, box.w, box.h);
+  }
+  if (features.health) {
+    const bh = box.h, hp = Math.max(0, Math.min(100, p.health)) / 100;
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(box.x - 6, box.y, 3, bh);
+    ctx.fillStyle = hp > 0.6 ? "#5fd38d" : hp > 0.3 ? "#ffb347" : "#ff5a5a";
+    ctx.fillRect(box.x - 6, box.y + bh * (1 - hp), 3, bh * hp);
+  }
+  const fs = Math.max(10, Math.min(14, box.h / 6));
+  ctx.font = `600 ${fs}px "Segoe UI", system-ui, sans-serif`; ctx.textAlign = "center";
+  if (features.names) {
+    const label = `${p.bot ? "[BOT] " : ""}${p.name}`;
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    const tw = ctx.measureText(label).width;
+    ctx.fillRect(box.x + box.w / 2 - tw / 2 - 4, box.y - fs - 7, tw + 8, fs + 4);
+    ctx.fillStyle = "#fff"; ctx.fillText(label, box.x + box.w / 2, box.y - 6);
+  }
+  if (features.distance) {
+    ctx.font = `${fs - 1}px "Segoe UI", system-ui, sans-serif`;
+    ctx.fillStyle = col; ctx.fillText(`${distM.toFixed(1)} m${features.health ? "" : ` · ${p.health} HP`}`, box.x + box.w / 2, box.y + box.h + fs + 2);
+  }
+  ctx.globalAlpha = 1; ctx.textAlign = "left";
+}
+
+function drawOffscreen(o) {
+  const { indicator: ind, relation, player: p, distM } = o;
+  const col = COLORS[relation];
+  ctx.save(); ctx.translate(ind.x, ind.y); ctx.rotate(ind.angle);
+  ctx.fillStyle = col; ctx.globalAlpha = ind.behind ? 0.55 : 0.9;
+  ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-6, -8); ctx.lineTo(-2, 0); ctx.lineTo(-6, 8); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha = 0.9; ctx.font = "11px 'Segoe UI', system-ui"; ctx.fillStyle = col; ctx.textAlign = "center";
+  const lx = o.labelX, ly = o.labelY;
+  ctx.fillText(`${features.names ? p.name + " " : ""}${features.distance ? distM.toFixed(0) + " m" : ""}`, lx, ly + 4);
+  ctx.globalAlpha = 1; ctx.textAlign = "left";
+}
+
+function drawMinimap(frame, players, w, h) {
+  const R = 86, cx = 18 + R, cy = h - 18 - R, scale = R / 1600;
+  const pov = frame.pov, yaw = Math.atan2(pov.forward[1], pov.forward[0]);
+  ctx.fillStyle = "rgba(11,14,19,.82)"; ctx.strokeStyle = "#252c38"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.save(); ctx.beginPath(); ctx.arc(cx, cy, R - 1, 0, Math.PI * 2); ctx.clip();
+  // cone do FOV
+  const half = Math.atan(Math.tan(fov * Math.PI / 360) * (w / h));
+  ctx.fillStyle = "rgba(143,211,255,.08)"; ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, R, -Math.PI / 2 - half, -Math.PI / 2 + half); ctx.closePath(); ctx.fill();
+  for (const p of players) {
+    if (!p.pos || p.health <= 0 || p.steamId === pov.steamId) continue;
+    const dx = p.pos[0] - pov.pos[0], dy = p.pos[1] - pov.pos[1];
+    // gira para o POV olhar "para cima" no minimapa (no mundo, +Y é a esquerda)
+    const ahead = dx * Math.cos(yaw) + dy * Math.sin(yaw);
+    const left = -dx * Math.sin(yaw) + dy * Math.cos(yaw);
+    const x = cx - left * scale, y = cy - ahead * scale;
+    ctx.fillStyle = p.team === pov.team ? COLORS.ally : COLORS.adversary;
+    ctx.beginPath(); ctx.arc(Math.max(cx - R + 4, Math.min(cx + R - 4, x)), Math.max(cy - R + 4, Math.min(cy + R - 4, y)), p.bot ? 3 : 4, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.moveTo(cx, cy - 7); ctx.lineTo(cx - 5, cy + 5); ctx.lineTo(cx + 5, cy + 5); ctx.closePath(); ctx.fill();
+}
+
+let frames = 0, fpsT = performance.now();
+function draw() {
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#0d1118"); g.addColorStop(0.5, "#10151d"); g.addColorStop(1, "#0a0d12");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+
+  const players = interpolated();
+  const frame = buildEspFrame({ players, povId, width: w, height: h, fovDeg: fov, features, maxDistanceM: rangeM >= 100 ? Infinity : rangeM });
+  $("hint").style.display = frame.cam ? "none" : "flex";
+
+  if (frame.cam) {
+    if (features.grid) drawGrid(frame.cam, frame.pov);
+    for (const it of frame.items) drawBox(it, w, h);
+    if (features.offscreen) for (const o of frame.offscreen) drawOffscreen(o);
+    if (features.minimap) drawMinimap(frame, players, w, h);
+    // mira central e cabeçalho do POV
+    ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(w / 2 - 6, h / 2); ctx.lineTo(w / 2 + 6, h / 2); ctx.moveTo(w / 2, h / 2 - 6); ctx.lineTo(w / 2, h / 2 + 6); ctx.stroke();
+    ctx.font = "600 13px 'Segoe UI', system-ui"; ctx.fillStyle = "#d9dfe7";
+    ctx.fillText(`POV: ${frame.pov.name} (${frame.pov.team}) · ${frame.pov.health} HP`, 14, 22);
+    ctx.font = "12px 'Segoe UI', system-ui"; ctx.fillStyle = "#7b8594";
+    ctx.fillText(`${frame.items.length} na tela · ${frame.offscreen.length} fora da tela · ${frame.hidden} ocultos pelos filtros`, 14, 40);
+  }
+
+  Object.assign(stats, { players: players.length, boxes: frame.items.length, offscreen: frame.offscreen.length, hidden: frame.hidden, pov: frame.pov?.steamId ?? null });
+  stats.frames++;
+  frames++;
+  const now = performance.now();
+  if (now - fpsT > 500) {
+    stats.fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now;
+    const age = lastAt ? ((Date.now() - lastAt) / 1000).toFixed(1) + " s" : "—";
+    $("perf").textContent = `${stats.fps} fps · último dado há ${age} · ${stats.players} jogadores`;
+    const st = $("status");
+    if (!lastAt || Date.now() - lastAt > 15000) { st.className = "badge off"; st.textContent = "sem dados"; }
+    else if (demo) { st.className = "badge demo"; st.textContent = "demonstração"; }
+    else { st.className = "badge live"; st.textContent = "ao vivo (GSI)"; }
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ---------------------------------------------------------- rede
+function connect() {
+  const es = new EventSource("/events");
+  es.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === "clear") { prev = cur = null; lastAt = 0; return; }
+    if (msg.type !== "state") return;
+    demo = !!msg.demo;
+    try { onState(msg.payload, msg.at); } catch (e) { console.warn("payload inesperado", e); }
+  };
+}
+if (povId) setPov(povId);
+connect();
+</script>
+</body>
+</html>

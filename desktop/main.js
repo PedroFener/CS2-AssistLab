@@ -15,6 +15,7 @@ const SMOKE = process.argv.includes("--smoke-test");
 
 let win = null;
 let radarWin = null;
+let espWin = null;
 let dash = null;
 let settings = null;
 let lastError = "";
@@ -48,7 +49,7 @@ async function stopService() {
   if (!dash) return null;
   const d = dash;
   dash = null;
-  if (radarWin && !radarWin.isDestroyed()) radarWin.close();
+  for (const w of [radarWin, espWin]) if (w && !w.isDestroyed()) w.close();
   const { summary } = await d.stop();
   return summary;
 }
@@ -57,6 +58,7 @@ function radarUrl() {
   const st = dash?.getStats();
   return `http://${viewHost(settings.host)}:${st?.port ?? settings.port}/`;
 }
+const espUrl = () => radarUrl() + "esp";
 
 function lanIps() {
   return Object.values(os.networkInterfaces()).flat()
@@ -97,6 +99,7 @@ function state() {
     lastError,
     lanIps: lanIps(),
     radarUrl: radarUrl(),
+    espUrl: espUrl(),
     gsiCfg: buildGsiConfig({ uriHost: cfgHost(), port: settings.port, token: settings.token }),
     logDir: settings.csvLog ? logDir() : null,
   };
@@ -118,16 +121,30 @@ function createWindow() {
   win.on("closed", () => { win = null; });
 }
 
+function viewerWindow(title, url) {
+  const w = new BrowserWindow({
+    width: 1400, height: 860, title, backgroundColor: "#0b0e13", autoHideMenuBar: true,
+    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+  });
+  w.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // links internos (radar ⇄ ESP) navegam na mesma janela; externos são bloqueados
+  w.webContents.on("will-navigate", (e, target) => { if (!target.startsWith(radarUrl())) e.preventDefault(); });
+  w.loadURL(url);
+  return w;
+}
+
 function openRadarWindow() {
   if (!dash) throw new Error("Inicie o serviço antes de abrir o radar.");
   if (radarWin && !radarWin.isDestroyed()) { radarWin.focus(); return; }
-  radarWin = new BrowserWindow({
-    width: 1280, height: 800, title: "CS2 AssistLab — Radar", backgroundColor: "#0e1116", autoHideMenuBar: true,
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
-  });
-  radarWin.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  radarWin.loadURL(radarUrl());
+  radarWin = viewerWindow("CS2 AssistLab — Radar", radarUrl());
   radarWin.on("closed", () => { radarWin = null; });
+}
+
+function openEspWindow() {
+  if (!dash) throw new Error("Inicie o serviço antes de abrir a visão ESP.");
+  if (espWin && !espWin.isDestroyed()) { espWin.focus(); return; }
+  espWin = viewerWindow("CS2 AssistLab — Visão ESP", espUrl());
+  espWin.on("closed", () => { espWin = null; });
 }
 
 // ------------------------------------------------------------------ IPC
@@ -155,6 +172,16 @@ function registerIpc() {
   });
   handle("new-token", () => newToken());
   handle("open-radar", () => openRadarWindow());
+  handle("open-esp", () => openEspWindow());
+  handle("open-esp-browser", async () => {
+    if (!dash) throw new Error("Inicie o serviço antes de abrir a visão ESP.");
+    await shell.openExternal(espUrl());
+  });
+  handle("demo", (on) => {
+    if (!dash) throw new Error("Inicie o serviço antes de ligar o modo demonstração.");
+    const now = dash.setDemo(!!on);
+    return now ? "Modo demonstração ligado (partida simulada)." : "Modo demonstração desligado.";
+  });
   handle("open-browser", async () => {
     if (!dash) throw new Error("Inicie o serviço antes de abrir o radar.");
     await shell.openExternal(radarUrl());
@@ -181,7 +208,8 @@ function registerIpc() {
 
 // ------------------------------------------------------------------ teste automático
 // "CS2 AssistLab.exe --smoke-test": sobe o serviço numa porta livre, envia um
-// payload GSI, abre o radar numa janela oculta e sai com código 0 (ok) ou 1.
+// payload GSI, abre o radar, o painel e a visão ESP (com o modo demonstração)
+// em janelas ocultas e sai com código 0 (ok) ou 1.
 
 async function runSmokeTest() {
   const out = process.env.ASSISTLAB_SMOKE_OUT;
@@ -221,9 +249,23 @@ async function runSmokeTest() {
     const hasApi = await ui.webContents.executeJavaScript("typeof window.assistlab === 'object'");
     if (!hasApi) throw new Error("preload não expôs a API do painel");
 
+    // Visão ESP com dados simulados: precisa desenhar quadros e enxergar os 10 jogadores.
+    d.setDemo(true);
+    const esp = new BrowserWindow({ show: false, width: 1280, height: 720, webPreferences: { sandbox: true, contextIsolation: true } });
+    await esp.loadURL(base + "/esp");
+    let espStats = null;
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      espStats = await esp.webContents.executeJavaScript("window.__espStats ? {...window.__espStats} : null");
+      if (espStats && espStats.players === 10 && espStats.pov && espStats.boxes + espStats.offscreen + espStats.hidden === 9) break;
+    }
+    if (!espStats || espStats.players !== 10 || !espStats.pov || espStats.boxes + espStats.offscreen + espStats.hidden !== 9)
+      throw new Error(`visão ESP não processou a demonstração: ${JSON.stringify(espStats)}`);
+    d.setDemo(false);
+
     await d.stop();
     clearTimeout(timer);
-    report(true, `serviço, radar e painel de controle carregaram (Electron ${process.versions.electron})`);
+    report(true, `serviço, radar, painel e visão ESP funcionando (ESP: ${espStats.players} jogadores, ${espStats.boxes} na tela, ${espStats.offscreen} fora; Electron ${process.versions.electron})`);
   } catch (e) {
     clearTimeout(timer);
     report(false, e.message);

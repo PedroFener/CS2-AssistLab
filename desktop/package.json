@@ -1,8 +1,8 @@
 {
   "name": "cs2-assistlab",
   "productName": "CS2 AssistLab",
-  "version": "1.0.0",
-  "description": "Painel administrativo do CS2 (radar GSI) para Windows",
+  "version": "1.1.0",
+  "description": "Painel administrativo do CS2 (radar GSI e visão ESP do espectador) para Windows",
   "author": "PedroFener",
   "license": "UNLICENSED",
   "private": true,

@@ -36,6 +36,10 @@ if (!fs.existsSync(stats.logs.events)) fail("events.csv não foi criado");
 
 const html = await (await fetch(`http://127.0.0.1:${port}/`)).text();
 if (!html.includes("Radar GSI")) fail("index.html não foi servido");
+const esp = await (await fetch(`http://127.0.0.1:${port}/esp`)).text();
+if (!esp.includes("Visão ESP")) fail("esp.html não foi servido");
+const lib = await fetch(`http://127.0.0.1:${port}/lib/esp.js`);
+if (lib.status !== 200 || !(await lib.text()).includes("buildEspFrame")) fail("/lib/esp.js não foi servido");
 
 srv.kill("SIGTERM");
 await new Promise((r) => srv.on("exit", r));

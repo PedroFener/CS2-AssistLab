@@ -34,13 +34,15 @@ function render(st) {
   $("pill").textContent = st.running ? "em execução" : "parado";
   $("pill").className = "pill " + (st.running ? "on" : "off");
   $("btnStart").disabled = st.running;
-  for (const id of ["btnStop", "btnRadar", "btnBrowser"]) $(id).disabled = !st.running;
+  for (const id of ["btnStop", "btnRadar", "btnBrowser", "btnEsp", "btnEspBrowser", "btnDemo"]) $(id).disabled = !st.running;
+  $("btnDemo").textContent = s?.demo ? "Desligar demonstração" : "Ligar demonstração";
   $("uptime").textContent = s ? fmtUptime(s.uptimeMs) : "";
-  $("url").textContent = st.running ? `Radar: ${st.radarUrl}   ·   GSI: ${st.radarUrl}gsi` : "";
+  $("url").textContent = st.running ? `Radar: ${st.radarUrl}   ·   ESP: ${st.espUrl}   ·   GSI: ${st.radarUrl}gsi` : "";
 
   // Estado da conexão: o cfg manda "heartbeat" a cada 10 s, então >15 s sem dados = desconectado.
   const conn = $("conn");
   if (!st.running) { conn.textContent = "serviço parado"; conn.className = "big mut"; }
+  else if (s.demo) { conn.textContent = "modo demonstração (dados simulados)"; conn.className = "big warn"; }
   else if (!s.lastAt) { conn.textContent = "aguardando o CS2…"; conn.className = "big warn"; }
   else if (s.ageMs > 15000) { conn.textContent = `sem dados há ${fmtAge(s.ageMs)}`; conn.className = "big bad"; }
   else { conn.textContent = "recebendo dados"; conn.className = "big ok"; }
@@ -75,6 +77,9 @@ $("btnStop").onclick = () => run(api.stop, "Serviço encerrado.");
 $("btnRadar").onclick = () => run(api.openRadar, "");
 $("btnBrowser").onclick = () => run(api.openBrowser, "Radar aberto no navegador.");
 $("btnLogs").onclick = () => run(api.openLogs, "");
+$("btnEsp").onclick = () => run(api.openEsp, "");
+$("btnEspBrowser").onclick = () => run(api.openEspBrowser, "Visão ESP aberta no navegador.");
+$("btnDemo").onclick = () => run(() => api.setDemo(!current?.stats?.demo), "");
 $("btnCopyCfg").onclick = () => run(api.copyCfg, "");
 $("btnSaveCfg").onclick = () => run(api.saveCfg, "");
 
