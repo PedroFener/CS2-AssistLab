@@ -119,7 +119,7 @@ npm run dist       # gera dist/AssistLab.exe e dist/AssistLab-Setup-*.exe
 |---|---|---|
 | Painel | Ubuntu, Node 20 | Testes unitários e de integração, teste de fumaça de ponta a ponta, testes das configurações |
 | App Windows | Windows, Node 22 | Instala dependências de versão fixa, testa, empacota, roda o `.exe` com `--smoke-test` e publica os artefatos |
-| Release | Ubuntu | Em tags `v*`, anexa os executáveis e o zip de configuração à Release |
+| Release | Ubuntu | A cada push na `main` (e em tags `v*`), publica a Release `v<versão de desktop/package.json>` com os executáveis e o zip de configuração |
 
 Versões fixas: Electron `45.3.4` e electron-builder `26.18.0`. O Electron 45 exige Node 22.12 ou superior para instalar, por isso o job do app usa Node 22.
 

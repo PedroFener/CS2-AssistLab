@@ -93,12 +93,20 @@ jobs:
 
   release:
     name: Publicar Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publica a cada push na main (e em tags v*). A tag vX.Y.Z vem da versão
+    # em desktop/package.json; se a Release já existir, os arquivos são atualizados.
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: windows-app
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Ler versão
+        id: ver
+        run: echo "tag=v$(node -p "require('./desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -110,8 +118,15 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          name: CS2 AssistLab ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: CS2 AssistLab ${{ steps.ver.outputs.tag }}
+          make_latest: "true"
+          overwrite_files: true
+          body: |
+            Aplicativo Windows (portátil e instalador), arquivos de configuração e painel para linha de comando.
+            Instruções em README.md; relatório de testes em docs/TESTES.md.
+            Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: |
             artifacts/CS2-AssistLab-Windows/AssistLab.exe
             artifacts/CS2-AssistLab-Windows/AssistLab-Setup-*.exe
