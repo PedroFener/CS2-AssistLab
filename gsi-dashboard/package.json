@@ -1,0 +1,14 @@
+{
+  "name": "assistlab-gsi-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Radar administrativo do CS2 via Game State Integration (sem dependências)",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/server.test.mjs",
+    "smoke": "node test/smoke.mjs",
+    "simulate": "node test/simulate-gsi.mjs 30"
+  },
+  "engines": { "node": ">=20" }
+}

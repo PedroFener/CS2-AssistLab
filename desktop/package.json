@@ -1,0 +1,47 @@
+{
+  "name": "cs2-assistlab",
+  "productName": "CS2 AssistLab",
+  "version": "1.0.0",
+  "description": "Painel administrativo do CS2 (radar GSI) para Windows",
+  "author": "PedroFener",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "prepare-dashboard": "node scripts/copy-dashboard.mjs",
+    "start": "npm run prepare-dashboard && electron .",
+    "test": "npm run prepare-dashboard && node --test test/settings.test.mjs",
+    "dist": "npm run prepare-dashboard && electron-builder --win portable nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.3.4",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.pedrofener.cs2assistlab",
+    "productName": "CS2 AssistLab",
+    "directories": { "output": "dist" },
+    "files": [
+      "main.js",
+      "preload.cjs",
+      "src/**",
+      "renderer/**",
+      "dashboard/**",
+      "package.json"
+    ],
+    "win": {
+      "target": ["portable", "nsis"]
+    },
+    "portable": {
+      "artifactName": "AssistLab.exe"
+    },
+    "nsis": {
+      "artifactName": "AssistLab-Setup-${version}.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "CS2 AssistLab"
+    }
+  }
+}

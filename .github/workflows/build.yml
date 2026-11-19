@@ -1,0 +1,118 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    name: Painel GSI (testes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Testes unitários e de integração
+        working-directory: gsi-dashboard
+        run: npm test
+
+      - name: Teste de fumaça (servidor real + simulador GSI)
+        working-directory: gsi-dashboard
+        run: npm run smoke
+
+      - name: Testes das configurações do app
+        working-directory: desktop
+        run: |
+          node scripts/copy-dashboard.mjs
+          node --test test/settings.test.mjs
+
+  windows-app:
+    name: App Windows (.exe)
+    needs: dashboard
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # O Electron 45 exige Node >= 22.12 para instalar (campo "engines").
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Instalar dependências (versões fixas no package.json)
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Testes
+        working-directory: desktop
+        run: npm test
+
+      - name: Empacotar (portátil + instalador)
+        working-directory: desktop
+        run: npm run dist
+
+      - name: Teste de fumaça do executável empacotado
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $env:ASSISTLAB_SMOKE_OUT = "$PWD\smoke.txt"
+          $exe = Get-ChildItem "dist\win-unpacked" -Filter "*.exe" | Select-Object -First 1
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList "--smoke-test" -Wait -PassThru
+          if (Test-Path smoke.txt) { Get-Content smoke.txt }
+          if ($p.ExitCode -ne 0) { throw "Teste de fumaça falhou (código $($p.ExitCode))" }
+
+      - name: Listar artefatos
+        working-directory: desktop
+        shell: pwsh
+        run: Get-ChildItem dist -File | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CS2-AssistLab-Windows
+          path: |
+            desktop/dist/AssistLab.exe
+            desktop/dist/AssistLab-Setup-*.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CS2-AssistLab-config
+          path: |
+            config/
+            gsi-dashboard/
+            !gsi-dashboard/logs/
+          if-no-files-found: error
+
+  release:
+    name: Publicar Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows-app
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compactar configs e painel
+        run: |
+          cd artifacts/CS2-AssistLab-config
+          zip -r ../../CS2-AssistLab-config-e-painel.zip .
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: CS2 AssistLab ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/CS2-AssistLab-Windows/AssistLab.exe
+            artifacts/CS2-AssistLab-Windows/AssistLab-Setup-*.exe
+            CS2-AssistLab-config-e-painel.zip

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AssistLab · Radar GSI</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --txt:#d7dde5; --mut:#7d8796; --ct:#5aa9ff; --t:#ffb347; --sel:#ffffff; --bad:#ff5d5d; --ok:#5fd38d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; display:grid; grid-template-columns: 1fr 340px; height:100vh; }
+  #wrap { position:relative; }
+  canvas { width:100%; height:100%; display:block; }
+  #top { position:absolute; left:12px; top:10px; color:var(--mut); }
+  #top b { color:var(--txt); }
+  aside { background:var(--panel); border-left:1px solid var(--line); padding:12px; overflow:auto; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--mut); margin:14px 0 6px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:3px 4px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  tr { cursor:pointer; } tr.sel td { background:#222a35; }
+  .ct { color:var(--ct); } .t { color:var(--t); } .dead { opacity:.4; }
+  .mut { color:var(--mut); } .bad { color:var(--bad); } .ok { color:var(--ok); }
+  #log { max-height:180px; overflow:auto; color:var(--mut); }
+  #empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--mut); text-align:center; padding:40px; }
+  @media (max-width: 800px) { body { grid-template-columns: 1fr; grid-template-rows: 60vh auto; } aside { border-left:none; border-top:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="top">mapa <b id="map">—</b> · fase <b id="phase">—</b> · <span id="conn" class="bad">desconectado</span></div>
+  <div id="empty">Aguardando dados do CS2…<br><br>Entre como espectador ou assista pela GOTV:<br>o GSI só envia a posição de todos os jogadores nesse modo.</div>
+</div>
+<aside>
+  <h2>Desempenho</h2>
+  <div>painel <b id="fps">0</b> fps · GSI <b id="hz">0</b> Hz · idade <b id="age">—</b></div>
+  <h2>Jogadores <span class="mut">(clique para medir distâncias)</span></h2>
+  <table id="players"></table>
+  <h2>Selecionado</h2>
+  <div id="selinfo" class="mut">nenhum</div>
+  <h2>Eventos</h2>
+  <div id="log"></div>
+</aside>
+<script>
+"use strict";
+const UNITS_TO_M = 0.0254;
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const $ = (id) => document.getElementById(id);
+
+let players = new Map();   // steamid -> {name, team, hp, pos:[x,y,z], fwd:[x,y,z], kills, deaths, alive}
+let selected = null;
+let bounds = null;         // {minX,maxX,minY,maxY} expande conforme chegam dados
+let lastAt = 0, arrivals = [], prevHp = new Map();
+
+function parseVec(s) {
+  if (typeof s !== "string") return null;
+  const v = s.split(",").map(Number);
+  return v.length === 3 && v.every(Number.isFinite) ? v : null;
+}
+
+function log(msg) {
+  const el = $("log");
+  const line = document.createElement("div");
+  line.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  el.prepend(line);
+  while (el.childElementCount > 120) el.lastChild.remove();
+}
+
+function ingest(p) {
+  $("map").textContent = p.map?.name ?? "—";
+  const phase = p.round?.phase ?? p.map?.phase ?? "—";
+  if ($("phase").textContent !== phase) { if ($("phase").textContent !== "—") log(`fase: ${phase}`); $("phase").textContent = phase; }
+
+  const all = p.allplayers;
+  if (!all || typeof all !== "object") return;
+  const next = new Map();
+  for (const [id, pl] of Object.entries(all)) {
+    const pos = parseVec(pl.position), fwd = parseVec(pl.forward);
+    if (!pos) continue;
+    const hp = pl.state?.health ?? 0;
+    const was = prevHp.get(id);
+    if (was > 0 && hp === 0) log(`${pl.name} morreu`);
+    prevHp.set(id, hp);
+    next.set(id, { name: pl.name ?? id, team: pl.team ?? "?", hp, pos, fwd, alive: hp > 0, bot: isBot(id, pl.name),
+                   kills: pl.match_stats?.kills ?? 0, deaths: pl.match_stats?.deaths ?? 0 });
+    if (!bounds) bounds = { minX: pos[0], maxX: pos[0], minY: pos[1], maxY: pos[1] };
+    bounds.minX = Math.min(bounds.minX, pos[0]); bounds.maxX = Math.max(bounds.maxX, pos[0]);
+    bounds.minY = Math.min(bounds.minY, pos[1]); bounds.maxY = Math.max(bounds.maxY, pos[1]);
+  }
+  players = next;
+  $("empty").style.display = players.size ? "none" : "flex";
+  renderTable();
+}
+
+// Mesma heurística de src/gsi.js: humanos têm SteamID64 (7656119 + 10 dígitos).
+function isBot(id, name) { return /^bot\b/i.test(String(name ?? "")) || !/^7656119\d{10}$/.test(String(id)); }
+
+function dist(a, b) { return Math.hypot(a[0]-b[0], a[1]-b[1], a[2]-b[2]) * UNITS_TO_M; }
+function yawOf(f) { return Math.atan2(f[1], f[0]) * 180 / Math.PI; }
+
+function renderTable() {
+  const rows = [...players.entries()].sort((a, b) => a[1].team.localeCompare(b[1].team) || a[1].name.localeCompare(b[1].name));
+  const sel = selected && players.get(selected);
+  $("players").innerHTML = rows.map(([id, p]) => {
+    const d = sel && id !== selected ? `${dist(sel.pos, p.pos).toFixed(1)} m` : "";
+    return `<tr data-id="${id}" class="${id === selected ? "sel" : ""} ${p.alive ? "" : "dead"}">
+      <td class="${p.team === "CT" ? "ct" : "t"}">${p.team}</td><td>${escapeHtml(p.name)} <span class="mut">${p.bot ? "BOT" : "humano"}</span></td>
+      <td>${p.hp} HP</td><td class="mut">${p.kills}/${p.deaths}</td><td>${d}</td></tr>`;
+  }).join("");
+  for (const tr of $("players").querySelectorAll("tr"))
+    tr.onclick = () => { selected = tr.dataset.id === selected ? null : tr.dataset.id; renderTable(); };
+
+  if (!sel) { $("selinfo").textContent = "nenhum"; return; }
+  const near = rows.filter(([id, p]) => id !== selected && p.alive)
+    .map(([, p]) => ({ p, d: dist(sel.pos, p.pos), rel: (p.team === sel.team ? "aliado" : "adversário") + (p.bot ? ", bot" : "") }))
+    .sort((a, b) => a.d - b.d).slice(0, 5);
+  $("selinfo").innerHTML =
+    `<b>${escapeHtml(sel.name)}</b> · pos ${sel.pos.map(v => v.toFixed(0)).join(", ")} · yaw ${sel.fwd ? yawOf(sel.fwd).toFixed(0) + "°" : "—"}<br>` +
+    near.map(n => `<span class="${n.p.team === "CT" ? "ct" : "t"}">${escapeHtml(n.p.name)}</span> ${n.d.toFixed(1)} m (${n.rel})`).join("<br>");
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c])); }
+
+// ---------------------------------------------------------------- desenho
+let frames = 0, fpsT = performance.now();
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  // grade
+  ctx.strokeStyle = "#1b212a"; ctx.lineWidth = 1;
+  for (let x = 0; x < w; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+  for (let y = 0; y < h; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+
+  if (bounds && players.size) {
+    const pad = 60, spanX = Math.max(400, bounds.maxX - bounds.minX), spanY = Math.max(400, bounds.maxY - bounds.minY);
+    const s = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanY);
+    const cx = (bounds.minX + bounds.maxX) / 2, cy = (bounds.minY + bounds.maxY) / 2;
+    const toScreen = (p) => [w / 2 + (p[0] - cx) * s, h / 2 - (p[1] - cy) * s]; // Y do mundo para cima
+
+    const sel = selected && players.get(selected);
+    if (sel) {
+      const [sx, sy] = toScreen(sel.pos);
+      for (const [id, p] of players) {
+        if (id === selected || !p.alive) continue;
+        const [x, y] = toScreen(p.pos);
+        ctx.strokeStyle = p.team === sel.team ? "rgba(90,169,255,.25)" : "rgba(255,93,93,.35)";
+        ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]);
+        ctx.fillStyle = "#7d8796"; ctx.font = "11px ui-monospace, monospace";
+        ctx.fillText(`${dist(sel.pos, p.pos).toFixed(0)} m`, (sx + x) / 2 + 4, (sy + y) / 2 - 4);
+      }
+    }
+
+    for (const [id, p] of players) {
+      const [x, y] = toScreen(p.pos);
+      const col = p.team === "CT" ? "#5aa9ff" : "#ffb347";
+      ctx.globalAlpha = p.alive ? 1 : 0.3;
+      if (p.fwd && p.alive) { // orientação: cone de visão
+        const yaw = Math.atan2(p.fwd[1], p.fwd[0]);
+        ctx.fillStyle = col + "33";
+        ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.arc(x, y, 46, -yaw - 0.45, -yaw + 0.45); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = col; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + Math.cos(-yaw) * 20, y + Math.sin(-yaw) * 20); ctx.stroke();
+      }
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(x, y, id === selected ? 8 : 6, 0, Math.PI * 2); ctx.fill();
+      if (id === selected) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke(); }
+      ctx.fillStyle = "#d7dde5"; ctx.font = "12px ui-monospace, monospace";
+      ctx.fillText(`${p.bot ? "[BOT] " : ""}${p.name} ${p.alive ? p.hp : "✕"}`, x + 10, y - 8);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  frames++;
+  const now = performance.now();
+  if (now - fpsT > 500) { $("fps").textContent = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
+  $("age").textContent = lastAt ? `${((Date.now() - lastAt) / 1000).toFixed(1)} s` : "—";
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ---------------------------------------------------------------- rede
+function connect() {
+  const es = new EventSource("/events");
+  es.onopen = () => { $("conn").textContent = "conectado"; $("conn").className = "ok"; };
+  es.onmessage = (ev) => {
+    let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type !== "state") return;
+    lastAt = msg.at;
+    const now = Date.now(); arrivals.push(now); arrivals = arrivals.filter(t => now - t < 2000);
+    $("hz").textContent = (arrivals.length / 2).toFixed(1);
+    try { ingest(msg.payload); } catch (e) { log("payload inesperado: " + e.message); }
+  };
+  es.onerror = () => { $("conn").textContent = "reconectando…"; $("conn").className = "bad"; };
+}
+connect();
+</script>
+</body>
+</html>

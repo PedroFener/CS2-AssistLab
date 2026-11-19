@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>CS2 AssistLab</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">CS2 AssistLab <span id="version" class="mut"></span></div>
+  <div id="pill" class="pill off">parado</div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Serviço</h2>
+    <div class="row">
+      <button id="btnStart" class="primary">Iniciar</button>
+      <button id="btnStop">Encerrar</button>
+      <span id="uptime" class="mut"></span>
+    </div>
+    <div class="row">
+      <button id="btnRadar">Abrir radar</button>
+      <button id="btnBrowser">Abrir no navegador</button>
+      <button id="btnLogs">Pasta de logs</button>
+    </div>
+    <div id="url" class="mono mut"></div>
+    <div id="msg" class="msg"></div>
+  </section>
+
+  <section class="card">
+    <h2>Conexão com o CS2</h2>
+    <div id="conn" class="big mut">—</div>
+    <dl>
+      <dt>Mapa / fase</dt><dd id="map">—</dd>
+      <dt>Jogadores</dt><dd id="players">—</dd>
+      <dt>Recebidos / rejeitados</dt><dd id="counts">—</dd>
+      <dt>Último erro</dt><dd id="lastError">—</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h2>Desempenho</h2>
+    <dl>
+      <dt>Atualizações GSI</dt><dd id="hz">—</dd>
+      <dt>Idade do último dado</dt><dd id="age">—</dd>
+      <dt>Radares abertos</dt><dd id="clients">—</dd>
+      <dt>CPU do serviço</dt><dd id="cpu">—</dd>
+      <dt>Memória do app</dt><dd id="mem">—</dd>
+    </dl>
+  </section>
+
+  <section class="card">
+    <h2>Configuração</h2>
+    <form id="form" autocomplete="off">
+      <label>Endereço de escuta
+        <select id="hostPreset">
+          <option value="127.0.0.1">Só este computador (127.0.0.1)</option>
+          <option value="0.0.0.0">Rede local (0.0.0.0)</option>
+          <option value="custom">Outro IPv4…</option>
+        </select>
+        <input id="hostCustom" placeholder="ex.: 192.168.0.10" hidden>
+      </label>
+      <label>Porta <input id="port" type="number" min="1024" max="65535"></label>
+      <label>Token de autenticação
+        <span class="row tight">
+          <input id="token" type="password" spellcheck="false">
+          <button type="button" id="btnShowToken">Mostrar</button>
+          <button type="button" id="btnNewToken">Gerar</button>
+        </span>
+      </label>
+      <label class="check"><input id="autoStart" type="checkbox"> Iniciar o serviço ao abrir o app</label>
+      <label class="check"><input id="csvLog" type="checkbox"> Gravar estatísticas em CSV</label>
+      <label class="check"><input id="rawLog" type="checkbox"> Gravar payloads brutos (JSONL)</label>
+      <div class="row"><button type="submit" class="primary">Salvar</button><span id="formMsg" class="mut"></span></div>
+    </form>
+  </section>
+
+  <section class="card wide">
+    <h2>Arquivo de configuração do CS2</h2>
+    <p class="mut">Coloque este arquivo em <span class="mono">…\Counter-Strike Global Offensive\game\csgo\cfg\</span> no computador que vai <b>assistir</b> a partida (espectador ou GOTV) e reinicie o CS2. <span id="lanHint"></span></p>
+    <pre id="cfg" class="mono"></pre>
+    <div class="row">
+      <button id="btnCopyCfg">Copiar</button>
+      <button id="btnSaveCfg">Salvar arquivo…</button>
+    </div>
+  </section>
+</main>
+<script src="renderer.js"></script>
+</body>
+</html>
